@@ -15,6 +15,8 @@ NUM_EPOCHS = 500
 LOAD_MODEL = False
 SAVE_MODEL = True
 CHECKPOINT_UNET = "UNET.pth.tar"
+GRADIENT_CLIPPING = 1.0
+AMP = True
 
 both_transform = A.Compose(
     [A.Resize(width=IMAGE_SIZE, height=IMAGE_SIZE),], additional_targets={"image0": "image"},
