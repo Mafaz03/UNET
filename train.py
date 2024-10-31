@@ -4,52 +4,64 @@ from torch.utils.data import DataLoader
 from dataset import ImageDataset
 import config
 from torch import optim
-from unet_models import unet
+from unet import UNET
 from torch import nn
-from utils.dice_score import dice_loss
+from dice_score import dice_loss
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
+import utils
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+
+import warnings
+warnings.filterwarnings("ignore")
 
 # Creating Dataloader
-train_set = ImageDataset(config.TRAIN_DIR)
+train_set = ImageDataset(config.TRAIN_DIR, transforms=config.train_transform)
 train_dl = DataLoader(train_set, shuffle=True, batch_size=config.TRAIN_BATCH_SIZE)
 
-val_set = ImageDataset(config.VAL_DIR)
+val_set = ImageDataset(config.VAL_DIR, transforms=config.val_transforms)
 val_dl = DataLoader(val_set, shuffle=False, batch_size=config.VAL_BATCH_SIZE)
 
-# Model and Loss function
-model = unet.UNet(3, 3).to(config.DEVICE)
-optimizer = optim.RMSprop(model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-8, momentum=0.999, foreach=True)
-scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)
-grad_scaler = torch.amp.GradScaler('cuda')
-criterion = nn.CrossEntropyLoss()
 
-global_step = 0
+model = UNET(in_channels=3, out_channels=3).to(config.DEVICE)
+loss_fn = nn.MSELoss()
+optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
+scaler = torch.amp.GradScaler('cuda')
 
-for epoch in range(1, config.NUM_EPOCHS):
-    model.train()
-    epoch_loss = 0
-    with tqdm(total=len(train_dl), desc=f'Epoch {epoch}/{config.NUM_EPOCHS}', unit='img') as pbar:
-        for batch in train_dl:
-            images = images.to(device=config.DEVICE, dtype=torch.float32, memory_format=torch.channels_last)
-            targets = targets.to(device=config.DEVICE, dtype=torch.long)
+if config.LOAD_MODEL:
+    config.load_checkpoint(torch.load(config.MODEL_PATH), model)
 
-            with torch.autocast(config.DEVICE if config.DEVICE != 'mps' else 'cpu', enabled=True):
-                targets_pred = model(images)
-                loss = criterion(targets_pred, targets.to(torch.float))
-                loss += dice_loss(
-                    targets_pred.float(),
-                    targets.float(),
-                )
+for epoch in range(config.NUM_EPOCHS):
+    dice_score = 0
+    losses = 0
+    num_batches = 0
+    for images, targets in train_dl:
+        images, targets = images.to(config.DEVICE), targets.float().to(config.DEVICE)
+        predictions = model(images)
+        utils.plot_batch(torch.sigmoid(predictions), save_pth=f"evaluation/{epoch}.jpg", show=False)
+        # utils.plot_batch(predictions, save_pth=f"evaluation2/{epoch}.jpg", show=False)
 
-            optimizer.zero_grad(set_to_none=True)
-            grad_scaler.scale(loss).backward()
-            grad_scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config.GRADIENT_CLIPPING)
-            grad_scaler.step(optimizer)
-            grad_scaler.update()
+        with torch.amp.autocast('cuda'):
+            predictions = model(images)
+            loss = loss_fn(predictions, targets)
+            losses += loss
+        
+        dice_loss = utils.dice_loss(torch.sigmoid(predictions), targets)
+        dice_score += (1 - dice_loss.item()) * 100  # Accumulate score
+        num_batches += 1 
 
-            global_step += 1
-            epoch_loss += loss.item()
-    print("Epoch loss: ", epoch_loss)
+        optimizer.zero_grad()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+    avg_loss = losses / num_batches
+    avg_dice_score = dice_score / num_batches
+
+    print("Epoch: ", epoch, "| Average loss: ", round(avg_loss.item(), 3), "| Average Dice Score: ", round(avg_dice_score, 3), " %")
+
+    checkpoint = {
+        "state_dict": model.state_dict(),
+        "optimizer":optimizer.state_dict(),
+        }
+    if epoch % config.SAVE_EVERY == 0 or epoch == config.NUM_EPOCHS-1:
+        utils.save_checkpoint(checkpoint)
