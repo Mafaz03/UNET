@@ -23,8 +23,8 @@ val_set = ImageDataset(config.VAL_DIR, transforms=config.val_transforms)
 val_dl = DataLoader(val_set, shuffle=False, batch_size=config.VAL_BATCH_SIZE)
 
 
-model = UNET(in_channels=3, out_channels=3).to(config.DEVICE)
-loss_fn = nn.MSELoss()
+model = UNET(3, 3).to(config.DEVICE)
+loss_fn = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
 scaler = torch.amp.GradScaler('cuda')
 
